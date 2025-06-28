@@ -25,7 +25,7 @@ class LoggerMixin:
         if self.log_with == LogTypes.TENSORBOARD:
             self.tracker = tensorboard.SummaryWriter(self.logging_dir)
         elif self.log_with == LogTypes.WANDB:
-            self.tracker = wandb.init(project="genrl-swarm", dir=logging_dir, mode='offline')
+            self.tracker = wandb.init(project="genrl-swarm-zh1p4ng", dir=logging_dir, mode='offline')
         else:
             self.tracker = get_logger()
             self.tracker.info(f"Invalid log type: {log_with}. Default to terminal logging")
