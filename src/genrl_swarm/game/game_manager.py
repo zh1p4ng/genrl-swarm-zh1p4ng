@@ -141,11 +141,44 @@ class GameManager(abc.ABC): #TODO: Make this use enum
             while not self.end_of_game():
                 get_logger().info(f"Starting round: {self.state.round}/{getattr(self, 'max_round', None)}.")
                 self.run_game_round() # Loops through stages until end of round signal is received
-        except:
+        except KeyboardInterrupt:
+            get_logger().info("Game interrupted by user (Ctrl+C)")
+            raise
+        except Exception as e:
             get_logger().exception("Exception occurred during game run.", stack_info=True)
+            # Clear memory on exception (GPU or CPU)
+            try:
+                import torch
+                import gc
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                # Always force garbage collection for CPU memory
+                gc.collect()
+            except Exception:
+                pass  # Ignore cleanup errors
+            raise e
         finally:
-            self._hook_after_game()
-            self.trainer.cleanup()
+            try:
+                self._hook_after_game()
+                if hasattr(self, 'trainer') and self.trainer:
+                    self.trainer.cleanup()
+            except Exception as cleanup_error:
+                get_logger().error(f"Error during cleanup: {cleanup_error}")
+            
+            # Final memory cleanup (GPU and CPU)
+            try:
+                import torch
+                import gc
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                # Always force garbage collection for CPU memory
+                gc.collect()
+            except Exception:
+                pass  # Ignore cleanup errors
 
 class DefaultGameManagerMixin:
     """

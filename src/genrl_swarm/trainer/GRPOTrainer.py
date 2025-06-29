@@ -159,32 +159,58 @@ class GRPOTrainerModule(TrainerModule, LoggerMixin):
         """   
         input_tokens = self._process_inputs(inputs)
         rollout, rollout_ids = [], [] #TODO: Revisit this for getting a larger number of completions. Super hacky and ugly currently.
-        for _ in range(self.num_generations):
-            with torch.no_grad():
-                outputs = self.model.generate(
-                    input_tokens.input_ids.to(self.model.device),
-                    attention_mask=input_tokens.attention_mask.to(self.model.device),
-                    generation_config=self.generation_config,
+        
+        try:
+            for _ in range(self.num_generations):
+                with torch.no_grad():
+                    outputs = self.model.generate(
+                        input_tokens.input_ids.to(self.model.device),
+                        attention_mask=input_tokens.attention_mask.to(self.model.device),
+                        generation_config=self.generation_config,
+                    )
+                    
+                # Extract completions (i.e., removes prompt part)
+                prompt_length = input_tokens.input_ids.size(1)
+                completion_ids = outputs[:, prompt_length:]
+
+                completions = self.processing_class.batch_decode(
+                    completion_ids, 
+                    skip_special_tokens=True
                 )
-                
-            # Extract completions (i.e., removes prompt part)
-            prompt_length = input_tokens.input_ids.size(1)
-            completion_ids = outputs[:, prompt_length:]
 
-            completions = self.processing_class.batch_decode(
-                completion_ids, 
-                skip_special_tokens=True
-            )
-
-            if len(rollout) == 0:
-                rollout = [[comp] for comp in completions]
-                if return_completion_ids:
-                    rollout_ids = [[comp] for comp in completion_ids]
-            else:
-                for idx, comp in enumerate(completions):
-                    rollout[idx].append(comp)
+                if len(rollout) == 0:
+                    rollout = [[comp] for comp in completions]
                     if return_completion_ids:
-                        rollout_ids[idx].append(completion_ids[idx])
+                        rollout_ids = [[comp] for comp in completion_ids]
+                else:
+                    for idx, comp in enumerate(completions):
+                        rollout[idx].append(comp)
+                        if return_completion_ids:
+                            rollout_ids[idx].append(completion_ids[idx])
+                
+                # Clear memory after each generation to prevent OOM
+                del outputs, completion_ids, completions
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                # For CPU-only (like Mac Mini M4), force garbage collection
+                import gc
+                gc.collect()
+                    
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                # Clear cache and force garbage collection on OOM
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                # For CPU-only systems, force aggressive garbage collection
+                import gc
+                gc.collect()
+                raise RuntimeError(f"Out of memory during generation. Consider reducing batch size or num_generations. Original error: {e}")
+            else:
+                raise e
         if return_completion_ids:
             return rollout, rollout_ids
         else:
@@ -327,38 +353,70 @@ class GRPOTrainerModule(TrainerModule, LoggerMixin):
         stage_outputs = [stage_actions[index_mapping[idx][0]][index_mapping[idx][1]][index_mapping[idx][2]] for idx, _ in enumerate(index_mapping)]
         assert stage_outputs is not None, f"No outputs found for stage {stage}"
 
-        model_inputs = {}
-        processed_inputs = self._process_inputs(stage_inputs, for_training=True)
-        model_inputs['prompt_ids'], model_inputs['prompt_mask'] = processed_inputs.input_ids.to(self.model.device), processed_inputs.attention_mask.to(self.model.device)
-        processed_outputs = self._process_inputs(stage_outputs, with_template=False, for_training=True)
-        model_inputs['completion_ids'], model_inputs['completion_mask'] = processed_outputs.input_ids.to(self.model.device), processed_outputs.attention_mask.to(self.model.device)
+        try:
+            model_inputs = {}
+            processed_inputs = self._process_inputs(stage_inputs, for_training=True)
+            model_inputs['prompt_ids'], model_inputs['prompt_mask'] = processed_inputs.input_ids.to(self.model.device), processed_inputs.attention_mask.to(self.model.device)
+            processed_outputs = self._process_inputs(stage_outputs, with_template=False, for_training=True)
+            model_inputs['completion_ids'], model_inputs['completion_mask'] = processed_outputs.input_ids.to(self.model.device), processed_outputs.attention_mask.to(self.model.device)
 
-        rewards = reward_manager[stage]
-        rewards = [rewards[index_mapping[idx][0]][index_mapping[idx][1]][index_mapping[idx][2]] for idx, _ in enumerate(index_mapping)]
-        assert rewards is not None, f"No rewards found for stage {stage}"
-        rewards = torch.tensor(rewards)
+            rewards = reward_manager[stage]
+            rewards = [rewards[index_mapping[idx][0]][index_mapping[idx][1]][index_mapping[idx][2]] for idx, _ in enumerate(index_mapping)]
+            assert rewards is not None, f"No rewards found for stage {stage}"
+            rewards = torch.tensor(rewards)
 
-        with torch.no_grad():
-            advantages = (rewards - rewards.mean(dim=1, keepdim=True)) 
-            if rewards.shape[1] > 1:
-                advantages /= (rewards.std(dim=1, keepdim=True) + 1e-8)
-        advantages = torch.flatten(advantages).to(self.model.device)
-        
-        model_inputs["advantages"] = advantages.squeeze(dim=-1)
-        model_inputs["old_per_token_logps"] = None
+            with torch.no_grad():
+                advantages = (rewards - rewards.mean(dim=1, keepdim=True)) 
+                if rewards.shape[1] > 1:
+                    advantages /= (rewards.std(dim=1, keepdim=True) + 1e-8)
+            advantages = torch.flatten(advantages).to(self.model.device)
+            
+            model_inputs["advantages"] = advantages.squeeze(dim=-1)
+            model_inputs["old_per_token_logps"] = None
 
-        with torch.amp.autocast(device_type="cuda", enabled=self.args.fp16):
-            loss = self.compute_loss(self.model, model_inputs)
-        
-        loss.backward()
-        self.optimizer.step()
-        self.model.zero_grad()
-      
-        metrics = {'train/loss': loss.cpu().mean().item()} 
-        metrics.update({'train/rewards': rewards.cpu().mean().item()})
-        self.log(metrics, global_step)
+            # Use appropriate device type for autocast
+            device_type = "cuda" if torch.cuda.is_available() else "cpu"
+            with torch.amp.autocast(device_type=device_type, enabled=self.args.fp16):
+                loss = self.compute_loss(self.model, model_inputs)
+            
+            loss.backward()
+            self.optimizer.step()
+            self.model.zero_grad()
+          
+            metrics = {'train/loss': loss.cpu().mean().item()} 
+            metrics.update({'train/rewards': rewards.cpu().mean().item()})
+            self.log(metrics, global_step)
 
-        self.cleanup_step()
+            self.cleanup_step()
+            
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                # Clear cache and cleanup on OOM
+                self.model.zero_grad()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+                    torch.mps.empty_cache()
+                # For CPU-only systems, force garbage collection
+                import gc
+                gc.collect()
+                self.cleanup_step()
+                raise RuntimeError(f"Out of memory during training step. Consider reducing batch size. Original error: {e}")
+            else:
+                # Ensure cleanup even on other errors
+                self.model.zero_grad()
+                self.cleanup_step()
+                raise e
+        finally:
+            # Always cleanup intermediate tensors
+            if 'processed_inputs' in locals():
+                del processed_inputs
+            if 'processed_outputs' in locals():
+                del processed_outputs
+            if 'rewards' in locals():
+                del rewards
+            if 'advantages' in locals():
+                del advantages
 
         return global_step
 

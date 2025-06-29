@@ -192,14 +192,28 @@ def moe_generate(self: torch.nn.Module, pg: dist.ProcessGroup | None = None):
 
         number_of_tokens_generated = 1
 
+        # Add generation timeout
+        import time
+        generation_start = time.time()
+        generation_timeout = 600  # 10 minutes timeout for generation
+        
         while number_of_tokens_generated < max_new_tokens:
+            # Check for generation timeout
+            if time.time() - generation_start > generation_timeout:
+                print(f"Warning: Generation timeout after {generation_timeout}s, stopping early")
+                break
+                
             # Process is still generating, inform other processes in the PG that they need
             # to call forward in the model.
-            dist.all_reduce(
-                torch.tensor([1], dtype=torch.int64, device=device),
-                group=pg,
-                async_op=True,
-            )
+            try:
+                dist.all_reduce(
+                    torch.tensor([1], dtype=torch.int64, device=device),
+                    group=pg,
+                    async_op=True,
+                )
+            except Exception as e:
+                print(f"Warning: Distributed all_reduce failed during generation: {e}")
+                break
 
             # Call forward pass with local data and obtain local outputs.
             with torch.no_grad():
@@ -252,9 +266,24 @@ def moe_generate(self: torch.nn.Module, pg: dist.ProcessGroup | None = None):
                 break
 
         # Make dummy calls to forward until all processes have finished generation.
+        # Add timeout to prevent infinite waiting
+        import time
+        timeout_start = time.time()
+        timeout_duration = 300  # 5 minutes timeout
+        
         while True:
+            # Check for timeout to prevent infinite loops
+            if time.time() - timeout_start > timeout_duration:
+                print(f"Warning: Distributed generation sync timeout after {timeout_duration}s")
+                break
+                
             t = torch.tensor([0], dtype=torch.int64, device=device)
-            dist.all_reduce(t, group=pg)
+            try:
+                # Add timeout to all_reduce operation
+                dist.all_reduce(t, group=pg, async_op=False)
+            except Exception as e:
+                print(f"Warning: Distributed all_reduce failed: {e}")
+                break
 
             if t.item() == 0:
                 # All processes are done with generation, exit.
@@ -267,8 +296,15 @@ def moe_generate(self: torch.nn.Module, pg: dist.ProcessGroup | None = None):
                 dummy_mask = torch.tensor(
                     [[0]], device=device, dtype=attention_mask.dtype
                 )
-                with torch.no_grad():
-                    _ = self(input_ids=dummy_input_id, attention_mask=dummy_mask)
+                try:
+                    with torch.no_grad():
+                        _ = self(input_ids=dummy_input_id, attention_mask=dummy_mask)
+                except Exception as e:
+                    print(f"Warning: Dummy forward call failed: {e}")
+                    break
+                finally:
+                    # Clean up dummy tensors
+                    del dummy_input_id, dummy_mask
         return (
             GenerateDecoderOnlyOutput(sequences=hypothesis, scores=-log_probs)
             if return_dict_in_generate
