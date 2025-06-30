@@ -244,16 +244,27 @@ class HivemindBackend(Communication):
             # Wait briefly for propagation
             time.sleep(1)
             
-            # Poll for all responses with timeout
+            # Poll for all responses with timeout - use shorter timeout for macOS
+            import sys
+            poll_timeout = min(self.timeout, 60 if sys.platform == 'darwin' else self.timeout)
             start_time = time.monotonic()
-            while time.monotonic() - start_time < self.timeout:
-                output, _ = self.dht.get(key, beam_size=self.beam_size, latest=True)
-                if len(output) >= self.world_size:
-                    break
-                time.sleep(0.1)  # Small delay between polls
+            poll_count = 0
+            max_polls = 600  # Prevent infinite polling
+            
+            while time.monotonic() - start_time < poll_timeout and poll_count < max_polls:
+                try:
+                    output, _ = self.dht.get(key, beam_size=self.beam_size, latest=True)
+                    if len(output) >= self.world_size:
+                        break
+                    time.sleep(0.1)  # Small delay between polls
+                    poll_count += 1
+                except Exception as e:
+                    print(f"Warning: DHT get failed during polling: {e}")
+                    time.sleep(0.5)  # Longer delay on error
+                    poll_count += 1
             else:
                 raise RuntimeError(
-                    f"Failed to obtain {self.world_size} values for {key} within timeout"
+                    f"Failed to obtain {self.world_size} values for {key} within timeout ({poll_timeout}s, {poll_count} polls)"
                 )
             
             self.step_ += 1
