@@ -253,7 +253,12 @@ class HivemindBackend(Communication):
             
             while time.monotonic() - start_time < poll_timeout and poll_count < max_polls:
                 try:
-                    output, _ = self.dht.get(key, beam_size=self.beam_size, latest=True)
+                    result = self.dht.get(key, beam_size=self.beam_size, latest=True)
+                    if result is None:
+                        time.sleep(0.1)
+                        poll_count += 1
+                        continue
+                    output, _ = result
                     if len(output) >= self.world_size:
                         break
                     time.sleep(0.1)  # Small delay between polls
