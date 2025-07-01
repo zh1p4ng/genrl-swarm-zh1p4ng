@@ -61,7 +61,7 @@ class HivemindBackend(Communication):
     
     # Known safe parameters for DHT initialization
     SAFE_DHT_PARAMS = frozenset({
-        'cache_locally', 'cache_on_store', 'identity', 'host_maddrs',
+        'cache_locally', 'cache_on_store', 'identity', 'identity_path', 'host_maddrs',
         'announce_maddrs', 'use_ipfs', 'record_validators', 'protocol_version'
     })
 
