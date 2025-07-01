@@ -42,6 +42,7 @@ class LocalDatasetManager(DataManager):
             batch_size=train_batch_size,
             shuffle=True,
             drop_last=True,
+            num_workers=0,  # Force num_workers=0 to avoid multiprocessing semaphore leaks
             collate_fn=custom_collate_fn  # Use custom collate function
         )
         self.eval_dataloader = DataLoader(
@@ -49,6 +50,7 @@ class LocalDatasetManager(DataManager):
             batch_size=num_eval_samples,
             shuffle=False,
             drop_last=True,
+            num_workers=0,  # Force num_workers=0 to avoid multiprocessing semaphore leaks
             collate_fn=custom_collate_fn  # Use custom collate function
         )
         # self.sample_num_batches_per_round = sample_num_batches_per_round    

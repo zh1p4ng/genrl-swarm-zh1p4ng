@@ -54,7 +54,7 @@ class SerialHuggingFaceDataManager(TokenizedDataManager):
         return torch.utils.data.DataLoader(
             dataset,
             batch_size=self.batch_size,
-            num_workers=self.num_workers,
+            num_workers=0,  # Force num_workers=0 to avoid multiprocessing semaphore leaks
             collate_fn=DataCollatorWithPadding(tokenizer=self.tokenizer),
         )
 

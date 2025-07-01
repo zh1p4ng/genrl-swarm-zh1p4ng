@@ -30,12 +30,22 @@ class MemoryMonitor:
         self.logger.warning("Memory pressure detected, clearing cache")
         try:
             import gc
+            import multiprocessing
+            
+            # Clear GPU cache
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.synchronize()  # Wait for operations to complete
             elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                 torch.mps.empty_cache()
-            # Always force garbage collection for CPU memory (important for CPU-only systems)
-            gc.collect()
+            
+            # Force garbage collection multiple times for CPU memory
+            for _ in range(3):
+                gc.collect()
+            
+            # Clean up multiprocessing resources
+            multiprocessing.active_children()  # Forces cleanup of dead children
+            
         except Exception as e:
             self.logger.error(f"Error during memory cleanup: {e}")
     
@@ -122,9 +132,9 @@ def create_memory_monitor(**kwargs) -> MemoryMonitor:
     if sys.platform == 'darwin':
         if is_cpu_only:
             # Mac Mini M4 style - CPU only
-            kwargs.setdefault('check_interval', 3.0)  # Frequent checks for CPU-only
-            kwargs.setdefault('memory_threshold', 0.6)  # Very conservative for CPU-only
-            kwargs.setdefault('gpu_threshold', 0.7)     # Actually system memory threshold
+            kwargs.setdefault('check_interval', 2.0)  # Very frequent checks for CPU-only
+            kwargs.setdefault('memory_threshold', 0.5)  # Very conservative for CPU-only to prevent kill-9
+            kwargs.setdefault('gpu_threshold', 0.6)     # Actually system memory threshold
         else:
             # Apple Silicon with MPS
             kwargs.setdefault('check_interval', 2.0)  # More frequent checks
