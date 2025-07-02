@@ -54,10 +54,10 @@ class HivemindRendezvouz:
 
 class HivemindBackend(Communication):
     # Constants for configuration
-    DEFAULT_BOOTSTRAP_WAIT = 2.0
-    DEFAULT_DHT_READY_TIMEOUT = 10.0
-    DEFAULT_READY_CHECK_INTERVAL = 0.5
-    DEFAULT_SHUTDOWN_TIMEOUT = 5.0
+    DEFAULT_BOOTSTRAP_WAIT = 5.0
+    DEFAULT_DHT_READY_TIMEOUT = 120.0
+    DEFAULT_READY_CHECK_INTERVAL = 1.0
+    DEFAULT_SHUTDOWN_TIMEOUT = 10.0
     
     # Known safe parameters for DHT initialization
     SAFE_DHT_PARAMS = frozenset({
